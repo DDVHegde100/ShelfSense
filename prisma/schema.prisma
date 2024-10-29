@@ -1,0 +1,516 @@
+// Prisma Schema for ShelfSense
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// AUTHENTICATION & USERS
+// ============================================
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  password      String?   // Hashed password for email/password auth
+  role          UserRole  @default(VIEWER)
+  
+  // Relations
+  accounts      Account[]
+  sessions      Session[]
+  organizations OrganizationMember[]
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  VIEWER
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ============================================
+// ORGANIZATIONS & MULTI-TENANCY
+// ============================================
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  logo        String?
+  
+  // Subscription
+  plan        SubscriptionPlan @default(FREE)
+  stripeCustomerId String?
+  stripeSubscriptionId String?
+  
+  // Relations
+  members     OrganizationMember[]
+  stores      Store[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("organizations")
+}
+
+enum SubscriptionPlan {
+  FREE
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+model OrganizationMember {
+  id             String       @id @default(cuid())
+  organizationId String
+  userId         String
+  role           UserRole     @default(VIEWER)
+  
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  createdAt      DateTime     @default(now())
+  
+  @@unique([organizationId, userId])
+  @@map("organization_members")
+}
+
+// ============================================
+// STORES & LOCATIONS
+// ============================================
+
+model Store {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  address        String?
+  city           String?
+  state          String?
+  zipCode        String?
+  country        String       @default("USA")
+  timezone       String       @default("America/New_York")
+  
+  // Store metadata
+  storeCode      String?      @unique
+  phoneNumber    String?
+  managerEmail   String?
+  
+  // Status
+  isActive       Boolean      @default(true)
+  
+  // Relations
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  shelves        Shelf[]
+  alerts         Alert[]
+  
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  
+  @@index([organizationId])
+  @@map("stores")
+}
+
+// ============================================
+// SHELVES & PRODUCTS
+// ============================================
+
+model Shelf {
+  id              String       @id @default(cuid())
+  storeId         String
+  name            String       // e.g., "Aisle 3 - Shelf B"
+  section         String?      // e.g., "Beverages", "Snacks"
+  aisle           String?
+  level           Int?         // 1 = bottom, 2 = middle, etc.
+  
+  // Physical dimensions (in cm)
+  width           Float?
+  height          Float?
+  depth           Float?
+  
+  // Planogram
+  planogramUrl    String?      // URL to planogram image
+  expectedProducts Json?       // Expected product layout
+  
+  // Status
+  isActive        Boolean      @default(true)
+  lastInspection  DateTime?
+  
+  // Relations
+  store           Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  cameras         Camera[]
+  detections      Detection[]
+  snapshots       ShelfSnapshot[]
+  
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  
+  @@index([storeId])
+  @@map("shelves")
+}
+
+model Product {
+  id              String       @id @default(cuid())
+  sku             String       @unique
+  name            String
+  brand           String?
+  category        String?
+  subCategory     String?
+  
+  // Product metadata
+  barcode         String?      @unique
+  imageUrl        String?
+  thumbnailUrl    String?
+  description     String?      @db.Text
+  
+  // Dimensions (in cm)
+  width           Float?
+  height          Float?
+  depth           Float?
+  weight          Float?       // in grams
+  
+  // Pricing
+  msrp            Float?       // Manufacturer's suggested retail price
+  
+  // ML embeddings (for CLIP search)
+  embedding       Float[]?     // Vector embedding
+  
+  // Relations
+  detections      Detection[]
+  
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  
+  @@index([category])
+  @@index([brand])
+  @@map("products")
+}
+
+// ============================================
+// HARDWARE & CAMERAS
+// ============================================
+
+model Camera {
+  id              String       @id @default(cuid())
+  shelfId         String
+  deviceId        String       @unique
+  name            String
+  model           String?      // e.g., "Raspberry Pi Camera v2", "ESP32-CAM"
+  
+  // Connection
+  ipAddress       String?
+  macAddress      String?
+  rtspUrl         String?      // RTSP stream URL
+  apiKey          String       @unique // For device authentication
+  
+  // Status
+  isOnline        Boolean      @default(false)
+  lastHeartbeat   DateTime?
+  lastSnapshot    DateTime?
+  
+  // Settings
+  captureInterval Int          @default(300) // Capture every 5 minutes (in seconds)
+  resolution      String       @default("1920x1080")
+  fps             Int          @default(10)
+  
+  // Calibration
+  position        Json?        // Camera position/angle metadata
+  calibrationData Json?        // Calibration parameters
+  
+  // Relations
+  shelf           Shelf        @relation(fields: [shelfId], references: [id], onDelete: Cascade)
+  snapshots       ShelfSnapshot[]
+  
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  
+  @@index([shelfId])
+  @@index([isOnline])
+  @@map("cameras")
+}
+
+model Sensor {
+  id              String       @id @default(cuid())
+  deviceId        String       @unique
+  type            SensorType
+  shelfId         String?
+  storeId         String?
+  
+  // Connection
+  isOnline        Boolean      @default(false)
+  lastReading     DateTime?
+  
+  // Latest readings
+  temperature     Float?       // Celsius
+  humidity        Float?       // Percentage
+  weight          Float?       // kg
+  
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  
+  @@map("sensors")
+}
+
+enum SensorType {
+  TEMPERATURE
+  HUMIDITY
+  WEIGHT
+  PRESSURE
+  LIGHT
+}
+
+// ============================================
+// ML DETECTIONS & ANALYTICS
+// ============================================
+
+model ShelfSnapshot {
+  id              String       @id @default(cuid())
+  shelfId         String
+  cameraId        String
+  imageUrl        String       // URL to original image
+  thumbnailUrl    String?      // URL to thumbnail
+  
+  // ML Processing
+  processingStatus ProcessingStatus @default(PENDING)
+  processingStartedAt DateTime?
+  processingCompletedAt DateTime?
+  processingError String?      @db.Text
+  
+  // Metadata
+  fileSize        Int?         // bytes
+  width           Int?
+  height          Int?
+  format          String?      // jpg, png, etc.
+  
+  // Relations
+  shelf           Shelf        @relation(fields: [shelfId], references: [id], onDelete: Cascade)
+  camera          Camera       @relation(fields: [cameraId], references: [id], onDelete: Cascade)
+  detections      Detection[]
+  analytics       ShelfAnalytics?
+  
+  capturedAt      DateTime     @default(now())
+  createdAt       DateTime     @default(now())
+  
+  @@index([shelfId, capturedAt])
+  @@index([processingStatus])
+  @@map("shelf_snapshots")
+}
+
+enum ProcessingStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Detection {
+  id              String       @id @default(cuid())
+  snapshotId      String
+  shelfId         String
+  productId       String?
+  
+  // Bounding box (normalized 0-1)
+  x               Float
+  y               Float
+  width           Float
+  height          Float
+  
+  // Classification
+  className       String       // Detected class name
+  confidence      Float        // 0-1 confidence score
+  
+  // Product matching
+  matchedProduct  Boolean      @default(false)
+  matchConfidence Float?
+  
+  // Relations
+  snapshot        ShelfSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  shelf           Shelf         @relation(fields: [shelfId], references: [id], onDelete: Cascade)
+  product         Product?      @relation(fields: [productId], references: [id])
+  
+  createdAt       DateTime     @default(now())
+  
+  @@index([snapshotId])
+  @@index([shelfId])
+  @@map("detections")
+}
+
+model ShelfAnalytics {
+  id                  String       @id @default(cuid())
+  snapshotId          String       @unique
+  
+  // Occupancy metrics
+  totalDetections     Int          @default(0)
+  emptySpaceCount     Int          @default(0)
+  occupancyRate       Float        @default(0) // 0-100 percentage
+  
+  // Product metrics
+  uniqueProducts      Int          @default(0)
+  outOfStockCount     Int          @default(0)
+  lowStockCount       Int          @default(0)
+  
+  // Planogram compliance
+  planogramScore      Float?       // 0-100 percentage
+  misplacedProducts   Int          @default(0)
+  
+  // Quality metrics
+  averageConfidence   Float        @default(0)
+  
+  // Additional metrics (JSON for flexibility)
+  metrics             Json?
+  
+  // Relations
+  snapshot            ShelfSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  
+  createdAt           DateTime     @default(now())
+  
+  @@map("shelf_analytics")
+}
+
+// ============================================
+// ALERTS & NOTIFICATIONS
+// ============================================
+
+model Alert {
+  id              String       @id @default(cuid())
+  storeId         String
+  shelfId         String?
+  type            AlertType
+  severity        AlertSeverity @default(MEDIUM)
+  
+  // Alert content
+  title           String
+  message         String       @db.Text
+  metadata        Json?        // Additional context
+  
+  // Status
+  status          AlertStatus  @default(ACTIVE)
+  acknowledgedAt  DateTime?
+  acknowledgedBy  String?
+  resolvedAt      DateTime?
+  resolvedBy      String?
+  
+  // Notification
+  notificationSent Boolean     @default(false)
+  
+  // Relations
+  store           Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  
+  @@index([storeId, status])
+  @@index([type])
+  @@index([createdAt])
+  @@map("alerts")
+}
+
+enum AlertType {
+  OUT_OF_STOCK
+  LOW_STOCK
+  PLANOGRAM_VIOLATION
+  MISPLACED_PRODUCT
+  CAMERA_OFFLINE
+  SENSOR_OFFLINE
+  TEMPERATURE_ALERT
+  SYSTEM_ERROR
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AlertStatus {
+  ACTIVE
+  ACKNOWLEDGED
+  RESOLVED
+  DISMISSED
+}
+
+// ============================================
+// SYSTEM & LOGS
+// ============================================
+
+model AuditLog {
+  id              String       @id @default(cuid())
+  userId          String?
+  action          String       // e.g., "USER_LOGIN", "STORE_CREATED"
+  entity          String?      // e.g., "Store", "Alert"
+  entityId        String?
+  
+  // Details
+  ipAddress       String?
+  userAgent       String?
+  metadata        Json?
+  
+  createdAt       DateTime     @default(now())
+  
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model SystemConfig {
+  id              String       @id @default(cuid())
+  key             String       @unique
+  value           String       @db.Text
+  description     String?
+  
+  updatedAt       DateTime     @updatedAt
+  
+  @@map("system_config")
+}
