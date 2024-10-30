@@ -1,0 +1,136 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: shelfsense-postgres
+    environment:
+      POSTGRES_DB: shelfsense
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - shelfsense-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: shelfsense-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - shelfsense-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Next.js Frontend & API
+  nextjs:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.nextjs
+    container_name: shelfsense-nextjs
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/shelfsense
+      - REDIS_URL=redis://redis:6379
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXTAUTH_SECRET=your-secret-key-change-in-production
+      - ML_SERVICE_URL=http://ml-service:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - shelfsense-network
+    volumes:
+      - ./src:/app/src
+      - ./public:/app/public
+    command: npm run dev
+
+  # ML Service (Python FastAPI)
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: ../docker/Dockerfile.ml
+    container_name: shelfsense-ml
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/shelfsense
+      - REDIS_URL=redis://redis:6379
+      - DEVICE=cpu  # Change to 'cuda' if GPU available
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - shelfsense-network
+    volumes:
+      - ./ml-service:/app
+      - ml_models:/app/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # MQTT Broker (for hardware communication)
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: shelfsense-mqtt
+    ports:
+      - "1883:1883"  # MQTT
+      - "9001:9001"  # WebSocket
+    volumes:
+      - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    networks:
+      - shelfsense-network
+
+  # MinIO (S3-compatible object storage for images)
+  minio:
+    image: minio/minio:latest
+    container_name: shelfsense-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    networks:
+      - shelfsense-network
+    command: server /data --console-address ":9001"
+
+networks:
+  shelfsense-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  ml_models:
+  minio_data:
+  mosquitto_data:
+  mosquitto_log:
