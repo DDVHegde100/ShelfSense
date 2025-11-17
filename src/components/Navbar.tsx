@@ -40,8 +40,11 @@ export default function Navbar() {
 
           {/* Desktop Navigation */}
           <div className="hidden md:flex items-center space-x-8 animate-fade-in">
-            <a href="#features" className="text-gray-800 hover:text-primary-teal transition-colors duration-200 font-semibold">
-              Features
+            <a href="/" className="text-gray-800 hover:text-primary-teal transition-colors duration-200 font-semibold">
+              Home
+            </a>
+            <a href="/dashboard" className="text-gray-800 hover:text-primary-teal transition-colors duration-200 font-semibold">
+              Dashboard
             </a>
             <a href="#how-it-works" className="text-gray-800 hover:text-primary-teal transition-colors duration-200 font-semibold">
               How It Works
